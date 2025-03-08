@@ -196,6 +196,7 @@ export const Chat = () => {
               };
             } catch (error) {
               // Fallback if API fails
+              console.error(error)
               botMessage = {
                 text: `Here's information about "${paper.title}". Would you like to view the full paper?`,
                 isBot: true,
@@ -245,7 +246,7 @@ export const Chat = () => {
                   <p>Which paper would you like to view? Please specify by number:</p>
                   <ol>
                     ${cachedPapers.map((p, idx) => 
-                      `<li><span class="paper-link" data-paper-id="${p.id}">${p.title}</span></li>`
+                      `<li key="${idx}"><span class="paper-link" data-paper-id="${p.id}">${p.title}</span></li>`
                     ).join('')}
                   </ol>
                 </div>`,

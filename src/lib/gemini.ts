@@ -1,6 +1,6 @@
 // src/lib/gemini.ts
 import Bottleneck from "bottleneck";
-import { CoreApiResponse, CorePaperResponse } from "@/types/core";
+import { CoreApiResponse, CorePaperResponse, ResearchPaper } from "@/types/core";
 import {
   GoogleGenerativeAI,
   HarmCategory,
@@ -46,8 +46,8 @@ const retryWithExponentialBackoff = async <T>(
 ): Promise<T> => {
   try {
     return await fn();
-  } catch (error: any) {
-    if (error?.code === 429 && retries > 0) {
+  } catch (error: unknown) { // Use `unknown` instead of `any`
+    if (error instanceof Error && 'code' in error && error.code === 429 && retries > 0) {
       const delayTime = initialDelay * 2 ** (3 - retries);
       console.log(`Rate limit exceeded. Retrying in ${delayTime}ms...`);
       await delay(delayTime);
@@ -62,7 +62,7 @@ const retryWithExponentialBackoff = async <T>(
 export const detectIntent = async (
   input: string, 
   conversationHistory: string[],
-  cachedPapers: any[] = []
+  cachedPapers: ResearchPaper[] = []
 ): Promise<Intent> => {
   return apiLimiter.schedule(async () => {
     const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash", generationConfig, safetySettings });

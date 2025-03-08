@@ -74,7 +74,7 @@ export const fetchSpecificPaper = async (paperId: string): Promise<CorePaperResp
       title: paper.title,
       abstract: paper.abstract,
       downloadUrl: paper.downloadUrl,
-      authors: paper.authors?.map((author: any) => author.name) || [],
+      authors: paper.authors || [],
       publishedDate: paper.publishedDate,
       citations: paper.citations,
       fullTextUrl: paper.fullTextUrl,
