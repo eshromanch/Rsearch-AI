@@ -1,0 +1,6 @@
+[build]
+  publish = ".next"  # Adjust this to your Next.js build output directory
+
+[[edge_functions]]
+  path = "/api/core-api"
+  function = "core-api"
