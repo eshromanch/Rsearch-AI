@@ -4,7 +4,7 @@ export interface CoreApiResponse {
   }
   
   export interface ResearchPaper {
-    downloadUrl: string;
+    downloadUrl?: string;
     id: string;
     title: string;
     paper?: string;
@@ -12,5 +12,20 @@ export interface CoreApiResponse {
     abstract?: string;
     doi?: string;
     year?: number;
+    authors?: Array<{ name: string }>;
+    publishedDate?: string;
+    citations?: number;
+    fullTextUrl?: string;
   }
  
+
+ export interface CorePaperResponse {
+    id: string;
+    title: string;
+    abstract?: string;
+    downloadUrl?: string;
+    authors?: Array<{ name: string }>;
+    publishedDate?: string;
+    citations?: number;
+    fullTextUrl?: string;
+  }

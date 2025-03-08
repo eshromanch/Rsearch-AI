@@ -1,67 +1,149 @@
-export default async (request, context) => {
-    // Handle preflight OPTIONS request for CORS
-    if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-          'Access-Control-Max-Age': '86400'
-        }
-      });
-    }
+// export default async (request, context) => {
+//     // Handle preflight OPTIONS request for CORS
+//     if (request.method === 'OPTIONS') {
+//       return new Response(null, {
+//         status: 204,
+//         headers: {
+//           'Access-Control-Allow-Origin': '*',
+//           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+//           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+//           'Access-Control-Max-Age': '86400'
+//         }
+//       });
+//     }
   
-    // Parse the query parameter from the URL
-    const url = new URL(request.url);
-    const query = url.searchParams.get('query');
+//     // Parse the query parameter from the URL
+//     const url = new URL(request.url);
+//     const query = url.searchParams.get('query');
     
-    if (!query) {
-      return new Response(JSON.stringify({ error: 'Query parameter is required' }), {
-        status: 400,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
-      });
-    }
+//     if (!query) {
+//       return new Response(JSON.stringify({ error: 'Query parameter is required' }), {
+//         status: 400,
+//         headers: {
+//           'Content-Type': 'application/json',
+//           'Access-Control-Allow-Origin': '*'
+//         }
+//       });
+//     }
     
-    try {
-      // Call the Core API with the query
-      const response = await fetch('https://api.core.ac.uk/v3/search/works', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer 3YdmtVuXJHSFiG2zPlKkIL1cb9yvaO8A',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          q: query,
-          limit: 15,
-          fields: ['id', 'title', 'abstract', 'downloadUrl']
-        })
-      });
+//     try {
+//       // Call the Core API with the query
+//       const response = await fetch('https://api.core.ac.uk/v3/search/works', {
+//         method: 'POST',
+//         headers: {
+//           'Authorization': 'Bearer 3YdmtVuXJHSFiG2zPlKkIL1cb9yvaO8A',
+//           'Content-Type': 'application/json'
+//         },
+//         body: JSON.stringify({
+//           q: query,
+//           limit: 15,
+//           fields: ['id', 'title', 'abstract', 'downloadUrl']
+//         })
+//       });
       
-      // Get the API response
-      const data = await response.json();
+//       // Get the API response
+//       const data = await response.json();
       
-      // Return the response with CORS headers
-      return new Response(JSON.stringify(data), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
-      });
-    } catch (error) {
-      // Handle errors
-      return new Response(JSON.stringify({ 
-        error: 'Failed to search papers',
-        details: error.message 
-      }), {
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
-      });
-    }
+//       // Return the response with CORS headers
+//       return new Response(JSON.stringify(data), {
+//         headers: {
+//           'Content-Type': 'application/json',
+//           'Access-Control-Allow-Origin': '*'
+//         }
+//       });
+//     } catch (error) {
+//       // Handle errors
+//       return new Response(JSON.stringify({ 
+//         error: 'Failed to search papers',
+//         details: error.message 
+//       }), {
+//         status: 500,
+//         headers: {
+//           'Content-Type': 'application/json',
+//           'Access-Control-Allow-Origin': '*'
+//         }
+//       });
+//     }
+//   }
+export default async (request, context) => {
+  // Handle preflight OPTIONS request for CORS
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400'
+      }
+    });
   }
+
+  // Parse the query parameter from the URL
+  const url = new URL(request.url);
+  const query = url.searchParams.get('query');
+  
+  if (!query) {
+    return new Response(JSON.stringify({ error: 'Query parameter is required' }), {
+      status: 400,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+  
+  try {
+    // Determine if the query is a search term or a specific paper ID
+    const isPaperId = /^\d+$/.test(query); // Assuming paper IDs are numeric
+    
+    let apiUrl, method, body;
+    if (isPaperId) {
+      // Fetch specific paper
+      apiUrl = `https://api.core.ac.uk/v3/works/${query}`;
+      method = 'GET';
+    } else {
+      // Search papers
+      apiUrl = 'https://api.core.ac.uk/v3/search/works';
+      method = 'POST';
+      body = JSON.stringify({
+        q: query,
+        limit: 15,
+        fields: ['id', 'title', 'abstract', 'downloadUrl']
+      });
+    }
+    
+    // Call the Core API
+    const response = await fetch(apiUrl, {
+      method,
+      headers: {
+        'Authorization': 'Bearer 3YdmtVuXJHSFiG2zPlKkIL1cb9yvaO8A',
+        'Content-Type': 'application/json'
+      },
+      body
+    });
+    
+    // Get the API response
+    const data = await response.json();
+    
+    // Return the response with CORS headers
+    return new Response(JSON.stringify(data), {
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  } catch (error) {
+    // Handle errors
+    return new Response(JSON.stringify({ 
+      error: 'Failed to fetch data',
+      details: error.message 
+    }), {
+      status: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+}
