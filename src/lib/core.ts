@@ -1,5 +1,5 @@
-// // // // src/lib/core.ts
-// local
+// // // // // src/lib/core.ts
+// // local
 // import { CoreApiResponse, CorePaperResponse } from '@/types/core';
 // import axios from 'axios';
 
@@ -32,7 +32,7 @@
 //       title: paper.title,
 //       abstract: paper.abstract,
 //       downloadUrl: paper.downloadUrl,
-//       authors: paper.authors?.map((author: any) => author.name) || [],
+//       authors: paper.authors || [],
 //       publishedDate: paper.publishedDate,
 //       citations: paper.citations,
 //       fullTextUrl: paper.fullTextUrl,
@@ -43,7 +43,7 @@
 //   }
 // };
 
-// production
+// // production
 
 import { CoreApiResponse, CorePaperResponse } from '@/types/core';
 import axios from 'axios';

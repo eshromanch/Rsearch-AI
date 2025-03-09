@@ -1,17 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
-import { Box, Button, Flex, Text, Textarea } from '@chakra-ui/react';
+import { Box, Button, Flex, Text, Textarea, Spinner } from '@chakra-ui/react';
 import { Avatar } from "@/components/ui/avatar";
 import { signOut } from "firebase/auth";
 import dynamic from "next/dynamic";
 import { auth, db } from "@/lib/firebase";
-import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+import { addDoc, collection, serverTimestamp, query, where, orderBy, limit, getDocs, Timestamp } from "firebase/firestore";
 import { fetchSpecificPaper, searchPapers } from "@/lib/core";
 import { 
   detectIntent, 
   extractPaperNumber,
   generateResponse, 
   generateSearchQuery, 
-  generatePaperSummary 
+  generatePaperSummary,
+  generateClarificationRequest,
+  generateOutOfScopeResponse,
+  generatePaperComparison,
+  extractSection,
+  extractSectionName
 } from "@/lib/gemini";
 import { useAuth } from "@/hooks/useAuth";
 import DOMPurify from 'dompurify';
@@ -35,16 +40,19 @@ interface ResearchPaper {
 }
 
 interface Message {
+  id: string;
   text: string;
   isBot: boolean;
   papers?: ResearchPaper[];
   html?: string;
+  timestamp?: Timestamp | Date;
 }
+
 
 // Dynamically import PDF viewer
 const PdfViewer = dynamic(
   () => import('@/components/PdfViewer'),
-  { ssr: false, loading: () => <Text>Loading PDF viewer...</Text> }
+  { ssr: false, loading: () => <Flex justify="center" align="center" p={10}><Spinner size="xl" /></Flex> }
 );
 
 export const Chat = () => {
@@ -56,6 +64,8 @@ export const Chat = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [cachedPapers, setCachedPapers] = useState<ResearchPaper[]>([]);
   const [currentPaperIdx, setCurrentPaperIdx] = useState<number | null>(null);
+  const [currentPaper, setCurrentPaper] = useState<ResearchPaper | null>(null); // Track the currently selected paper
+  // const [errorCount, setErrorCount] = useState(0);
 
   // Auto-scroll to bottom of messages
   const scrollToBottom = () => {
@@ -65,6 +75,61 @@ export const Chat = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Load previous chat if available
+  useEffect(() => {
+    const loadPreviousChat = async () => {
+      if (user && messages.length === 0) {
+        try {
+          const chatQuery = query(
+            collection(db, 'chats'),
+            where('userId', '==', user.uid),
+            orderBy('timestamp', 'desc'),
+            limit(1)
+          );
+          
+          const querySnapshot = await getDocs(chatQuery);
+          if (!querySnapshot.empty) {
+            const chatDoc = querySnapshot.docs[0];
+            const chatData = chatDoc.data();
+            
+            if (chatData.messages && chatData.messages.length > 0) {
+              const formattedMessages = chatData.messages.map((msg: Message) => ({
+                // id: `prev-${index}`,
+                ...msg,
+                timestamp: msg.timestamp instanceof Timestamp ? msg.timestamp.toDate() : new Date()
+              }));
+              
+              setMessages(formattedMessages);
+              
+              // Restore cached papers if available
+              if (chatData.papers && chatData.papers.length > 0) {
+                setCachedPapers(chatData.papers);
+              }
+              
+              return; // Don't set welcome message if we loaded previous chat
+            }
+          }
+        } catch (error) {
+          console.error("Error loading previous chat:", error);
+          // Continue to set welcome message on error
+        }
+        
+        // Set welcome message if no previous chat
+        setMessages([
+          {
+            id: 'welcome',
+            text: "Welcome to the Research Assistant! I can help you find academic papers, provide summaries, and answer your research questions. What would you like to explore today?",
+            isBot: true,
+            html: "<div><p>Welcome to the Research Assistant! I can help you find academic papers, provide summaries, and answer your research questions. What would you like to explore today?</p><p>For example, you can ask:</p><ul><li>Find papers on climate change adaptation strategies</li><li>Summarize recent research on quantum computing</li><li>What are the latest developments in natural language processing?</li></ul></div>",
+            timestamp: new Date()
+          }
+        ]);
+      }
+    };
+    
+    loadPreviousChat();
+  }, [user, messages.length]);
 
   // Add event listener for paper links
   useEffect(() => {
@@ -91,28 +156,22 @@ export const Chat = () => {
     };
   }, [cachedPapers]);
 
-  // Initialize with a welcome message
-  useEffect(() => {
-    if (messages.length === 0) {
-      setMessages([
-        {
-          text: "Welcome to the Research Assistant! I can help you find academic papers, provide summaries, and answer your research questions. What would you like to explore today?",
-          isBot: true,
-          html: "<div><p>Welcome to the Research Assistant! I can help you find academic papers, provide summaries, and answer your research questions. What would you like to explore today?</p></div>"
-        }
-      ]);
-    }
-  }, [messages.length]);
-
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || !user) return;
   
     setIsLoading(true);
-    const userMessage = { text: inputMessage, isBot: false };
+    const messageId = `user-${Date.now()}`;
+    const userMessage: Message = { 
+      id: messageId, 
+      text: inputMessage, 
+      isBot: false,
+      timestamp: new Date()
+    };
   
     try {
       // Add user message to chat
       setMessages(prev => [...prev, userMessage]);
+      setInputMessage('');
   
       // Get conversation history for context
       const conversationHistory = messages.map(msg => `${msg.isBot ? 'Bot' : 'User'}: ${msg.text}`);
@@ -121,16 +180,36 @@ export const Chat = () => {
       const intent = await detectIntent(inputMessage, conversationHistory, cachedPapers);
       console.log('Detected intent:', intent);
   
-      let botMessage: Message = { text: '', isBot: true };
+      let botMessage: Message = { 
+        id: `bot-${Date.now()}`, 
+        text: '', 
+        isBot: true,
+        timestamp: new Date()
+      };
   
       switch (intent) {
         case 'search':
           // Search for papers
           const searchQuery = await generateSearchQuery(inputMessage);
+          console.log('Generated search query:', searchQuery);
+          
+          const loadingMessage: Message = {
+            id: `loading-${Date.now()}`,
+            text: `Searching for papers on: "${searchQuery}"...`,
+            isBot: true,
+            html: `<div><p>Searching for papers on: <strong>"${searchQuery}"</strong>...</p></div>`,
+            timestamp: new Date()
+          };
+          
+          setMessages(prev => [...prev, loadingMessage]);
+          
           const papersResponse = await searchPapers(searchQuery);
   
+          // Remove loading message
+          setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
+          
           if (!papersResponse.results.length) {
-            throw new Error('No relevant papers found. Please try a different query.');
+            throw new Error(`No papers found for "${searchQuery}". Please try a different search term or topic.`);
           }
   
           // Cache papers for future reference
@@ -150,13 +229,15 @@ export const Chat = () => {
           );
           
           botMessage = {
+            id: `bot-${Date.now()}`,
             text,
             isBot: true,
             papers: citedPapers,
             html: DOMPurify.sanitize(html, {
               ALLOWED_TAGS: ['div', 'h2', 'h3', 'ul', 'li', 'ol', 'span', 'p', 'a', 'strong', 'em', 'b', 'i'],
               ALLOWED_ATTR: ['class', 'data-paper-id', 'href', 'style'],
-            })
+            }),
+            timestamp: new Date()
           };
           break;
           
@@ -165,17 +246,33 @@ export const Chat = () => {
           const paperIdx = extractPaperNumber(inputMessage);
           
           if (paperIdx !== null && cachedPapers[paperIdx]) {
-            setCurrentPaperIdx(paperIdx);
             const paper = cachedPapers[paperIdx];
+            setCurrentPaper(paper); // Update the currently selected paper
+            setCurrentPaperIdx(paperIdx);
+            
+            // Loading message
+            const loadingMessage: Message = {
+              id: `loading-${Date.now()}`,
+              text: `Retrieving details for "${paper.title}"...`,
+              isBot: true,
+              html: `<div><p>Retrieving details for <strong>"${paper.title}"</strong>...</p></div>`,
+              timestamp: new Date()
+            };
+            
+            setMessages(prev => [...prev, loadingMessage]);
             
             try {
               // Fetch full paper details
               const paperDetails = await fetchSpecificPaper(paper.id);
               
+              // Remove loading message
+              setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
+              
               // Generate detailed summary
               const summary = await generatePaperSummary(paperDetails, conversationHistory);
               
               botMessage = {
+                id: `bot-${Date.now()}`,
                 text: summary,
                 isBot: true,
                 papers: [paper],
@@ -193,11 +290,16 @@ export const Chat = () => {
                     ALLOWED_ATTR: ['href', 'class', 'data-paper-id'],
                   }
                 ),
+                timestamp: new Date()
               };
             } catch (error) {
+              // Remove loading message
+              setMessages(prev => prev.filter(msg => msg.id !== loadingMessage.id));
+              
               // Fallback if API fails
-              console.error(error)
+              console.error(error);
               botMessage = {
+                id: `bot-${Date.now()}`,
                 text: `Here's information about "${paper.title}". Would you like to view the full paper?`,
                 isBot: true,
                 papers: [paper],
@@ -212,10 +314,11 @@ export const Chat = () => {
                     ALLOWED_ATTR: ['href', 'class', 'data-paper-id'],
                   }
                 ),
+                timestamp: new Date()
               };
             }
           } else {
-            throw new Error('Could not find the referenced paper. Please try again.');
+            throw new Error('I could not find the paper you\'re referring to. Please specify a valid paper number or try searching for papers first.');
           }
           break;
           
@@ -226,6 +329,7 @@ export const Chat = () => {
             setSelectedPaper(paper);
             
             botMessage = {
+              id: `bot-${Date.now()}`,
               text: `Opening "${paper.title}" for you.`,
               isBot: true,
               html: DOMPurify.sanitize(
@@ -235,10 +339,12 @@ export const Chat = () => {
                   ALLOWED_ATTR: [],
                 }
               ),
+              timestamp: new Date()
             };
           } else if (cachedPapers.length > 0) {
             // If we have papers but no specific one selected, ask which one
             botMessage = {
+              id: `bot-${Date.now()}`,
               text: `Which paper would you like to view? Please specify by number (1-${cachedPapers.length}).`,
               isBot: true,
               html: DOMPurify.sanitize(
@@ -255,6 +361,7 @@ export const Chat = () => {
                   ALLOWED_ATTR: ['class', 'data-paper-id'],
                 }
               ),
+              timestamp: new Date()
             };
           } else {
             throw new Error('No papers are available. Please search for papers first.');
@@ -282,16 +389,133 @@ export const Chat = () => {
           );
           
           botMessage = {
+            id: `bot-${Date.now()}`,
             text: response.text,
             isBot: true,
             papers: response.papers,
             html: DOMPurify.sanitize(response.html, {
               ALLOWED_TAGS: ['div', 'h2', 'h3', 'ul', 'li', 'ol', 'span', 'p', 'a', 'strong', 'em', 'b', 'i'],
               ALLOWED_ATTR: ['class', 'data-paper-id', 'href', 'style'],
-            })
+            }),
+            timestamp: new Date()
           };
           break;
           
+        case 'clarification_needed':
+          const clarification = await generateClarificationRequest(inputMessage, conversationHistory);
+          botMessage = {
+            id: `bot-${Date.now()}`,
+            text: clarification,
+            isBot: true,
+            html: DOMPurify.sanitize(clarification, {
+              ALLOWED_TAGS: ['div', 'p', 'ul', 'li', 'a'],
+              ALLOWED_ATTR: ['class'],
+            }),
+            timestamp: new Date()
+          };
+          break;
+          
+        case 'out_of_scope':
+          const outOfScopeResponse = await generateOutOfScopeResponse(inputMessage);
+          botMessage = {
+            id: `bot-${Date.now()}`,
+            text: outOfScopeResponse,
+            isBot: true,
+            html: DOMPurify.sanitize(outOfScopeResponse, {
+              ALLOWED_TAGS: ['div', 'p', 'ul', 'li', 'a'],
+              ALLOWED_ATTR: ['class'],
+            }),
+            timestamp: new Date()
+          };
+          break;
+          
+        case 'comparison':
+          if (cachedPapers.length >= 2) {
+            const comparison = await generatePaperComparison(cachedPapers, inputMessage, conversationHistory);
+            botMessage = {
+              id: `bot-${Date.now()}`,
+              text: comparison,
+              isBot: true,
+              html: DOMPurify.sanitize(comparison, {
+                ALLOWED_TAGS: ['div', 'h3', 'p', 'ul', 'li', 'a'],
+                ALLOWED_ATTR: ['class'],
+              }),
+              timestamp: new Date()
+            };
+          } else {
+            throw new Error('Please provide at least two papers to compare.');
+          }
+          break;
+
+        case 'specific_sections':
+          if (!currentPaper) {
+            throw new Error('No paper is currently selected. Please specify a paper number or search for papers first.');
+          }
+
+          const sectionName = extractSectionName(inputMessage);
+          if (!sectionName) {
+            throw new Error('Please specify a valid section (e.g., methodology, results, conclusion).');
+          }
+
+          const paperDetails = await fetchSpecificPaper(currentPaper.id);
+          if (paperDetails.fullTextUrl) {
+            const sectionContent = await extractSection(currentPaper.id, paperDetails.fullTextUrl, sectionName, cachedPapers);
+            if (sectionContent) {
+              botMessage = {
+                id: `bot-${Date.now()}`,
+                text: `Here's the ${sectionName} section of "${currentPaper.title}":\n\n${sectionContent}`,
+                isBot: true,
+                html: DOMPurify.sanitize(
+                  `<div class="paper-info">
+                    <h3>${sectionName.charAt(0).toUpperCase() + sectionName.slice(1)} Section of "${currentPaper.title}"</h3>
+                    <p>${sectionContent}</p>
+                    <p><a class="paper-link" data-paper-id="${currentPaper.id}" href="#view-paper">View Full Paper</a></p>
+                  </div>`,
+                  {
+                    ALLOWED_TAGS: ['div', 'h3', 'p', 'a'],
+                    ALLOWED_ATTR: ['href', 'class', 'data-paper-id'],
+                  }
+                ),
+                timestamp: new Date()
+              };
+            } else {
+              botMessage = {
+                id: `bot-${Date.now()}`,
+                text: `I couldn't find the ${sectionName} section in the paper. Here's a summary instead: ${paperDetails.abstract}`,
+                isBot: true,
+                html: DOMPurify.sanitize(
+                  `<div class="paper-info">
+                    <h3>Summary of "${currentPaper.title}"</h3>
+                    <p>${paperDetails.abstract || 'No abstract available'}</p>
+                    <p><a class="paper-link" data-paper-id="${currentPaper.id}" href="#view-paper">View Full Paper</a></p>
+                  </div>`,
+                  {
+                    ALLOWED_TAGS: ['div', 'h3', 'p', 'a'],
+                    ALLOWED_ATTR: ['href', 'class', 'data-paper-id'],
+                  }
+                ),
+                timestamp: new Date()
+              };
+            }
+          } else {
+            botMessage = {
+              id: `bot-${Date.now()}`,
+              text: `I don't have access to the full text of this paper, but you can view it here: ${currentPaper.pdfUrl}`,
+              isBot: true,
+              html: DOMPurify.sanitize(
+                `<div class="paper-info">
+                  <p>I don't have access to the full text of this paper, but you can view it here: <a href="${currentPaper.pdfUrl}" target="_blank">${currentPaper.title}</a>.</p>
+                </div>`,
+                {
+                  ALLOWED_TAGS: ['div', 'p', 'a'],
+                  ALLOWED_ATTR: ['href', 'target'],
+                }
+              ),
+              timestamp: new Date()
+            };
+          }
+          break;
+
         default:
           throw new Error('I\'m not sure how to help with that. Could you try rephrasing your question?');
       }
@@ -306,7 +530,6 @@ export const Chat = () => {
         timestamp: serverTimestamp(),
         papers: botMessage.papers || []
       });
-      
     } catch (error) {
       const message = error instanceof Error ? error.message : 'An unexpected error occurred.';
       toaster.create({
@@ -314,19 +537,19 @@ export const Chat = () => {
         description: message,
         duration: 5000,
       });
-      
-      // Provide a helpful error message to the user
+
       setMessages(prev => [...prev, {
+        id: `error-${Date.now()}`,
         text: message,
         isBot: true,
         html: DOMPurify.sanitize(`<div class="error-message">${message}</div>`, {
           ALLOWED_TAGS: ['div'],
           ALLOWED_ATTR: ['class'],
-        })
+        }),
+        timestamp: new Date()
       }]);
     } finally {
       setIsLoading(false);
-      setInputMessage('');
     }
   };
 
@@ -345,10 +568,10 @@ export const Chat = () => {
           Sign Out
         </Button>
       </Flex>
-      
+
       <Box flex={1} overflowY="auto" p={4} bg="gray.900">
         {messages.map((msg, idx) => (
-          <Flex key={idx} mb={4} align="flex-start" gap={3}>
+          <Flex key={msg.id || idx} mb={4} align="flex-start" gap={3}>
             <Avatar
               name={msg.isBot ? 'AI' : user?.displayName ?? ''}
               src={msg.isBot ? undefined : user?.photoURL || undefined}
@@ -358,50 +581,19 @@ export const Chat = () => {
               <Text fontWeight="500" color="white" mb={1}>
                 {msg.isBot ? 'Research Assistant' : user?.displayName || 'You'}
               </Text>
-              
               {msg.isBot ? (
                 <Box
                   dangerouslySetInnerHTML={{ __html: msg.html || '' }}
                   className="bot-message"
                   css={{
-                    '& div': {
-                      bg: 'gray.700',
-                      p: 3,
-                      borderRadius: 'md',
-                      boxShadow: 'sm',
-                      mb: 3,
-                    },
-                    '& h2, & h3, & h4': {
-                      fontWeight: 'semibold',
-                      color: 'white',
-                      mb: 2,
-                    },
-                    '& ul, & ol': {
-                      pl: 6,
-                      mb: 3,
-                    },
-                    '& li': {
-                      mb: 1,
-                    },
-                    '& p': {
-                      mb: 2,
-                      lineHeight: 1.6,
-                    },
-                    '& a, & .paper-link': {
-                      color: 'blue.300',
-                      textDecoration: 'underline',
-                      cursor: 'pointer',
-                      _hover: {
-                        color: 'blue.200',
-                      },
-                    },
-                    '& strong, & b': {
-                      fontWeight: 'bold',
-                      color: 'white',
-                    },
-                    '& .error-message': {
-                      color: 'red.300',
-                    },
+                    '& div': { bg: 'gray.700', p: 3, borderRadius: 'md', boxShadow: 'sm', mb: 3 },
+                    '& h2, & h3, & h4': { fontWeight: 'semibold', color: 'white', mb: 2 },
+                    '& ul, & ol': { pl: 6, mb: 3 },
+                    '& li': { mb: 1 },
+                    '& p': { mb: 2, lineHeight: 1.6 },
+                    '& a, & .paper-link': { color: 'blue.300', textDecoration: 'underline', cursor: 'pointer', _hover: { color: 'blue.200' } },
+                    '& strong, & b': { fontWeight: 'bold', color: 'white' },
+                    '& .error-message': { color: 'red.300' },
                   }}
                 />
               ) : (
@@ -414,7 +606,7 @@ export const Chat = () => {
         ))}
         <div ref={messagesEndRef} />
       </Box>
-      
+
       {/* PDF Viewer Dialog */}
       <DialogRoot open={!!selectedPaper} onOpenChange={(open) => !open && setSelectedPaper(null)}>
         <DialogContent maxWidth="4xl" height="90vh">
@@ -432,7 +624,7 @@ export const Chat = () => {
           </DialogFooter>
         </DialogContent>
       </DialogRoot>
-      
+
       {/* Message input */}
       <Flex p={4} gap={2} boxShadow="md" bg="gray.800">
         <Textarea
